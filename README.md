@@ -1,13 +1,13 @@
 # 반도체 수요 · 장비 가동률 예측 (Salesforce)
 
-> 반도체 제조 고객사의 Salesforce CRM 프로젝트. 고객 수요 예측(FCST)으로 장비별 생산능력과 가동률을 계산하는 예측 화면, 생성형 AI 분석 리포트, 생산계획 대비 실적, AWS Lambda 연동을 개발했습니다.
+> 반도체 제조 고객사의 Salesforce CRM 프로젝트. 고객 수요 예측(FCST)으로 장비별 생산능력과 가동률을 계산하는 예측 화면, 생성형 AI 분석 리포트, 생산계획 대비 실적, 뉴스 클리핑, AWS Lambda 로 PPT · 뉴스를 Salesforce 에 자동 반영하는 연동을 개발했습니다.
 
 | 항목 | 내용 |
 |---|---|
 | 기간 | 2025.09 – 2026.03 |
 | 역할 | 예측 · 분석 기능 개발, 외부 연동, CRM 화면 |
 | 형태 | 회사 프로젝트 (고객사 구축) |
-| 기술 | Apex, LWC, Chart.js, SheetJS, Agentforce, Einstein Prompt Template, Visualforce PDF, AWS Lambda (Python), Secrets Manager, S3 |
+| 기술 | Apex, LWC, Chart.js, SheetJS, Agentforce, Einstein Prompt Template, Visualforce PDF, Inbound Email, Batch, AWS Lambda (Python, python-pptx), Secrets Manager, S3, Composite API |
 
 > 회사 프로젝트를 정리한 문서입니다. 고객사 이름, 실데이터, 장비 · 라인 정보, 산식의 고유 계수, 계정 · 엔드포인트는 포함하지 않습니다.
 
@@ -47,27 +47,51 @@ flowchart LR
 - 월별 입력 모달(Quick Action)과 CSV · 엑셀 업로드 두 가지 입력 방식
 - 업로드용 CSV 파서를 Apex 로 직접 구현
 
-## 4. AWS Lambda 뉴스 수집 · 요약
+## 4. 뉴스 클리핑 (메일 수신 → 배치 → AWS Lambda 요약)
 
-매일 한 번 Salesforce 의 뉴스 레코드 중 요약이 없는 기사를 찾아 본문을 수집하고 요약해 다시 Salesforce 에 반영합니다.
+매일 받는 뉴스 메일을 Salesforce 뉴스 레코드로 만들고, AWS Lambda 가 기사 본문을 모아 요약해 거래처 화면에서 볼 수 있게 했습니다.
 
 ```mermaid
 flowchart LR
+    MAIL[뉴스 메일] --> IE[Inbound Email 처리<br/>기사 제목 · 링크 추출]
+    IE --> SF[(뉴스 레코드)]
+    IE -. 실패 시 .-> Q[(메일 대기열)]
+    Q --> B[배치 · 스케줄러<br/>200건씩 재처리]
+    B --> SF
     EV[매일 스케줄] --> L[AWS Lambda<br/>Python 3.12]
-    SM[(Secrets Manager<br/>인증 키)] --> L
-    L -- OAuth JWT Bearer --> SF[(Salesforce<br/>뉴스 레코드)]
-    L -->|병렬 수집| WEB[기사 본문]
-    L -->|추출 요약 · HTML 변환| SF
+    SM[(Secrets Manager)] --> L
+    L -- OAuth JWT Bearer --> SF
+    L -->|병렬 수집 · 추출 요약| SF
+    SF --> UI[거래처 화면<br/>뉴스 LWC]
 ```
 
-- 인증은 OAuth 2.0 JWT Bearer, 키는 Secrets Manager 에 보관
-- 병렬 수집(스레드 5개), 문장 위치 · 키워드 · 숫자 기반 추출 요약
+- **메일 수신**: 메일 본문의 기사 목록에서 제목과 링크를 정규식으로 뽑고 HTML 엔티티 · 공백 정리, 255자를 넘는 링크는 쿼리 문자열을 잘라 저장
+- **실패 재처리**: 처리 중 오류가 난 메일은 대기열 레코드로 남기고, 배치가 200건씩 다시 처리한 뒤 성공한 것만 지워 재시도가 가능하게 함
+- **Lambda 요약**: 요약이 없는 최근 기사만 골라 본문을 병렬 수집(스레드 5개), 문장 위치 · 키워드 · 숫자 기반 추출 요약 후 일괄 반영
 - 일정 건수마다 재연결하고, 실패하면 다른 조회 경로로 다시 시도
-- Salesforce 쪽: 수신 메일에서 뉴스를 추출하는 Inbound Email 처리와 배치 스케줄러
 
-## 5. 그 밖에
+## 5. 프로젝트 요약 PPT 자동 반영 (AWS Lambda)
 
-- **외부 파일 연동**: Apex REST 로 S3 사전 서명 주소를 받아, 파일을 내려받지 않고 Salesforce 파일 외부 링크로 레코드에 연결
+S3 에 프로젝트별로 올라오는 요약 PPT 를 매일 읽어, 표 안의 항목을 Salesforce 프로젝트 레코드 필드로 자동 반영합니다.
+
+```mermaid
+flowchart LR
+    S3[(S3<br/>프로젝트별 요약 PPT)] --> L[AWS Lambda<br/>Python 3.12 · python-pptx]
+    EV[매일 스케줄] --> L
+    L -->|표 파싱 · 값 정리| J[구조화 데이터]
+    J -- Composite API 25건씩 --> SF[(프로젝트 레코드)]
+    L -->|처리한 파일 이름 변경| S3
+```
+
+- 프로젝트 폴더마다 최신 PPT 를 고름 (PPT 내부의 생성 · 수정 일시 기준)
+- 슬라이드에서 가장 큰 목차 표를 찾아 섹션(프로젝트 정보, 영업 정보, 양산 계획 등)과 항목으로 나누고, `항목 : 값` 형식 · 날짜 · 금액 · 빈 값(`-`, `TBD`)을 정리
+- 고객사 이름은 거래처 조회 필드로 바꾸고, 조회는 200건씩, 반영은 Composite API 로 25건씩 묶어 1,000건 이상도 처리
+- 프로젝트마다 처리 결과(성공 · 실패 · 파일 없음)를 기록하고, 처리한 파일은 이름에 처리 날짜를 붙여 다시 처리하지 않게 함
+- 인증은 JWT Bearer, 키는 Secrets Manager 에 보관
+
+## 6. 그 밖에
+
+- **PPT 파일 자동 연결**: AWS 에서 파일을 올리면 Apex REST API 가 외부 ID 로 대상 레코드를 찾아, 파일을 내려받지 않고 Salesforce 파일(외부 링크)로 연결. 요청 검증, 호출 로그(민감정보 마스킹) 포함
 - **CRM 화면**: 프로젝트 태스크 · 단계별 마일스톤, 거래처 리포트, 스코어보드, 범용 레코드 상세 컴포넌트
 
 ## 배운 점

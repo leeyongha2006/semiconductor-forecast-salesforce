@@ -94,6 +94,35 @@ flowchart LR
 - **PPT 파일 자동 연결**: AWS 에서 파일을 올리면 Apex REST API 가 외부 ID 로 대상 레코드를 찾아, 파일을 내려받지 않고 Salesforce 파일(외부 링크)로 연결. 요청 검증, 호출 로그(민감정보 마스킹) 포함
 - **CRM 화면**: 프로젝트 태스크 · 단계별 마일스톤, 거래처 리포트, 스코어보드, 범용 레코드 상세 컴포넌트
 
+## 예제 코드
+
+예측 계산, 뉴스 메일 파싱, Lambda 의 PPT · 뉴스 처리 방식을 **독립적으로 다시 구현한 예제**입니다. 회사 코드가 아니며, 장비 · 고객 · 필드 이름은 모두 예시입니다.
+
+**Apex** (`force-app/`)
+
+| 파일 | 역할 |
+|---|---|
+| [`CapacityForecast.cls`](force-app/main/default/classes/CapacityForecast.cls) | 테스트 시간 · 가동 시간 · 장비 대수로 기간별 CAPA 와 가동률 계산. 월 · 주 단위 자동 판별(윤년 포함), 직전 기간 계산, 장비명 정규화 |
+| [`NewsMailParser.cls`](force-app/main/default/classes/NewsMailParser.cls) | 뉴스 메일 HTML 에서 기사 제목 · 첫 번째 링크 추출, HTML 엔티티 정리, 255자 넘는 링크 처리 |
+| `*_Test.cls` | 테스트 11개 — 월 · 주 CAPA, 윤년, 연도 넘김, 3,000행 처리, 링크 자르기 |
+
+**Python Lambda** (`aws-lambda/`)
+
+| 파일 | 역할 |
+|---|---|
+| [`ppt_summary_parser.py`](aws-lambda/ppt_summary_parser.py) | PPT 표의 행을 섹션 → 항목 → 값으로 정리하고, 날짜 · 금액 · 거래처 조회 · 빈 값(`-`, `TBD`)을 처리해 Salesforce 필드 값으로 변환 |
+| [`news_summarizer.py`](aws-lambda/news_summarizer.py) | 문장 위치 · 키워드 · 숫자 점수로 중요한 문장을 골라 원래 순서대로 요약 |
+| `tests/` | 테스트 10개 (표준 라이브러리 `unittest`, 추가 설치 없음) |
+
+### 직접 실행
+
+```bash
+sf org create scratch -f config/project-scratch-def.json -a forecast-demo
+sf project deploy start -o forecast-demo -d force-app --test-level RunLocalTests
+
+cd aws-lambda && python -m unittest discover -s tests
+```
+
 ## 배운 점
 
 - 예측 화면은 계산식보다 **고객이 보내는 데이터가 얼마나 제각각인지**를 받아 주는 쪽이 더 어렵다는 것
